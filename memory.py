@@ -4,11 +4,12 @@
   2. 长期记忆（Store）- 跨会话的事实/偏好存储
   3. 摘要记忆（Summary）- 对话摘要压缩，减少上下文窗口占用
 """
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langgraph.store.base import BaseStore
 import uuid
 import logging
+
+from llm_provider import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ def generate_summary(messages, previous_summary: str = "") -> str:
         新的摘要文本
     """
     try:
-        model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+        model = get_llm(temperature=0)
         history = "\n".join([
             f"{msg.type}: {msg.content[:500]}"  # 限制单条消息长度
             for msg in messages
@@ -107,7 +108,7 @@ def extract_fact(messages) -> str | None:
         提取的事实字符串，如果没有值得记忆的内容则返回 None
     """
     try:
-        model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+        model = get_llm(temperature=0)
         # 只看最近 8 条消息，避免上下文过长
         recent_msgs = messages[-8:] if len(messages) > 8 else messages
         text = "\n".join([

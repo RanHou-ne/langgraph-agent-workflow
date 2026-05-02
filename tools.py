@@ -1,19 +1,163 @@
 """
 工具模块：为 Agent 提供可调用的工具集。
-支持模拟数据和真实 API 调用两种模式。
+支持真实 API 和模拟数据两种模式，当 API Key 未配置时自动降级为模拟数据。
+
+真实 API 支持：
+  - 搜索：Tavily / SerpAPI（通过 SEARCH_API 环境变量切换）
+  - 天气：OpenWeatherMap
 """
 import os
 import json
 import httpx
+import logging
 from langchain_core.tools import tool
 
+logger = logging.getLogger(__name__)
 
-# ─────────────────────────── 模拟数据工具 ───────────────────────────
+# ─────────────────────────── 配置常量 ───────────────────────────
+
+# 搜索 API 配置
+SEARCH_API = os.getenv("SEARCH_API", "mock").lower().strip()  # tavily | serpapi | mock
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
+
+# 天气 API 配置
+OPENWEATHERMAP_API_KEY = os.getenv("OPENWEATHERMAP_API_KEY")
+
+# 中文城市名到英文的映射（用于 OpenWeatherMap）
+CITY_NAME_MAP = {
+    "北京": "Beijing",
+    "上海": "Shanghai",
+    "广州": "Guangzhou",
+    "深圳": "Shenzhen",
+    "杭州": "Hangzhou",
+    "成都": "Chengdu",
+    "武汉": "Wuhan",
+    "南京": "Nanjing",
+    "西安": "Xi'an",
+    "重庆": "Chongqing",
+    "天津": "Tianjin",
+    "苏州": "Suzhou",
+    "长沙": "Changsha",
+    "郑州": "Zhengzhou",
+    "青岛": "Qingdao",
+    "大连": "Dalian",
+    "厦门": "Xiamen",
+    "昆明": "Kunming",
+    "哈尔滨": "Harbin",
+    "济南": "Jinan",
+}
+
+
+# ─────────────────────────── 天气描述映射 ───────────────────────────
+
+def _weather_code_to_chinese(description: str) -> str:
+    """将 OpenWeatherMap 英文天气描述转换为中文。"""
+    mapping = {
+        "clear sky": "晴天 ☀️",
+        "few clouds": "少云 🌤️",
+        "scattered clouds": "多云 ⛅",
+        "broken clouds": "阴天 ☁️",
+        "overcast clouds": "阴天 ☁️",
+        "shower rain": "阵雨 🌦️",
+        "rain": "雨 🌧️",
+        "light rain": "小雨 🌦️",
+        "moderate rain": "中雨 🌧️",
+        "heavy rain": "大雨 🌧️",
+        "thunderstorm": "雷阵雨 ⛈️",
+        "snow": "雪 🌨️",
+        "light snow": "小雪 🌨️",
+        "mist": "薄雾 🌫️",
+        "fog": "雾 🌫️",
+        "haze": "霾 🌫️",
+        "drizzle": "毛毛雨 🌦️",
+    }
+    lower_desc = description.lower()
+    for eng, chn in mapping.items():
+        if eng in lower_desc:
+            return chn
+    return description
+
+
+def _wind_direction(deg: float) -> str:
+    """将风向角度转换为中文方向。"""
+    directions = ["北", "东北", "东", "东南", "南", "西南", "西", "西北"]
+    idx = round(deg / 45) % 8
+    return directions[idx]
+
+
+# ─────────────────────────── 天气工具 ───────────────────────────
 
 @tool
 def search_weather(city: str) -> str:
     """搜索指定城市的天气预报信息。输入城市名称，返回天气详情。"""
-    # 模拟天气数据（可替换为真实 API）
+    # 尝试使用真实 API
+    if OPENWEATHERMAP_API_KEY:
+        try:
+            return _fetch_weather_real(city)
+        except Exception as e:
+            logger.warning(f"OpenWeatherMap API 调用失败，降级为模拟数据: {e}")
+
+    # 降级为模拟数据
+    return _fetch_weather_mock(city)
+
+
+def _fetch_weather_real(city: str) -> str:
+    """调用 OpenWeatherMap API 获取真实天气数据。"""
+    # 中文城市名转英文
+    city_en = CITY_NAME_MAP.get(city, city)
+
+    url = "https://api.openweathermap.org/data/2.5/weather"
+    params = {
+        "q": city_en,
+        "appid": OPENWEATHERMAP_API_KEY,
+        "units": "metric",
+        "lang": "zh_cn",
+    }
+
+    with httpx.Client(timeout=10) as client:
+        response = client.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+    # 解析数据
+    temp = data["main"]["temp"]
+    feels_like = data["main"]["feels_like"]
+    temp_min = data["main"]["temp_min"]
+    temp_max = data["main"]["temp_max"]
+    humidity = data["main"]["humidity"]
+    description = data["weather"][0]["description"]
+    wind_speed = data.get("wind", {}).get("speed", 0)
+    wind_deg = data.get("wind", {}).get("deg", 0)
+    visibility = data.get("visibility", 10000) / 1000  # 转为 km
+
+    weather_cn = _weather_code_to_chinese(description)
+    wind_dir = _wind_direction(wind_deg)
+
+    result = (
+        f"🌤️ {city}实时天气：{weather_cn}\n"
+        f"🌡️ 当前温度：{temp}°C（体感 {feels_like}°C）\n"
+        f"📊 温度范围：{temp_min}°C ~ {temp_max}°C\n"
+        f"💧 湿度：{humidity}%\n"
+        f"💨 风向：{wind_dir}风，风速 {wind_speed} m/s\n"
+        f"👁️ 能见度：{visibility:.1f} km"
+    )
+
+    # 添加出行建议
+    if temp > 30:
+        result += "\n💡 建议：天气炎热，注意防晒补水。"
+    elif temp < 5:
+        result += "\n💡 建议：天气寒冷，注意保暖。"
+    elif "雨" in weather_cn:
+        result += "\n💡 建议：有降水，出门记得带伞。"
+    else:
+        result += "\n💡 建议：天气适宜，适合外出活动。"
+
+    return result
+
+
+def _fetch_weather_mock(city: str) -> str:
+    """模拟天气数据（降级方案）。"""
     weather_data = {
         "北京": "北京：晴转多云，气温 18~28℃，空气质量良，适合外出。",
         "上海": "上海：多云，气温 20~26℃，东南风3级，偶有阵雨。",
@@ -29,6 +173,111 @@ def search_weather(city: str) -> str:
             return value
     return f"{city}：多云转晴，气温 20~28℃，适合外出活动。"
 
+
+# ─────────────────────────── 搜索工具 ───────────────────────────
+
+@tool
+def web_search(query: str) -> str:
+    """搜索互联网获取最新信息。输入搜索关键词，返回相关搜索结果。"""
+    # 根据配置选择搜索 API
+    if SEARCH_API == "tavily" and TAVILY_API_KEY:
+        try:
+            return _search_tavily(query)
+        except Exception as e:
+            logger.warning(f"Tavily 搜索失败，降级为模拟数据: {e}")
+    elif SEARCH_API == "serpapi" and SERPAPI_API_KEY:
+        try:
+            return _search_serpapi(query)
+        except Exception as e:
+            logger.warning(f"SerpAPI 搜索失败，降级为模拟数据: {e}")
+
+    # 降级为模拟数据
+    return _search_mock(query)
+
+
+def _search_tavily(query: str) -> str:
+    """使用 Tavily Search API 进行搜索。"""
+    try:
+        from tavily import TavilyClient
+    except ImportError:
+        raise ImportError(
+            "使用 Tavily 搜索需要安装 tavily-python：\n"
+            "  pip install tavily-python"
+        )
+
+    client = TavilyClient(api_key=TAVILY_API_KEY)
+    response = client.search(
+        query=query,
+        max_results=5,
+        search_depth="basic",
+    )
+
+    results = response.get("results", [])
+    if not results:
+        return f"🔍 关于「{query}」未找到相关结果。"
+
+    output = f"🔍 搜索结果：关于「{query}」\n\n"
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "无标题")
+        url = r.get("url", "")
+        snippet = r.get("content", "")[:200]
+        output += f"  {i}. {title}\n"
+        output += f"     {snippet}\n"
+        output += f"     🔗 {url}\n\n"
+
+    return output.strip()
+
+
+def _search_serpapi(query: str) -> str:
+    """使用 SerpAPI (Google) 进行搜索。"""
+    url = "https://serpapi.com/search"
+    params = {
+        "q": query,
+        "api_key": SERPAPI_API_KEY,
+        "engine": "google",
+        "num": 5,
+        "hl": "zh-cn",
+        "gl": "cn",
+    }
+
+    with httpx.Client(timeout=15) as client:
+        response = client.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+    organic = data.get("organic_results", [])
+    if not organic:
+        return f"🔍 关于「{query}」未找到相关结果。"
+
+    output = f"🔍 搜索结果：关于「{query}」\n\n"
+    for i, r in enumerate(organic[:5], 1):
+        title = r.get("title", "无标题")
+        link = r.get("link", "")
+        snippet = r.get("snippet", "")[:200]
+        output += f"  {i}. {title}\n"
+        output += f"     {snippet}\n"
+        output += f"     🔗 {link}\n\n"
+
+    return output.strip()
+
+
+def _search_mock(query: str) -> str:
+    """模拟搜索结果（降级方案）。"""
+    results = {
+        "default": [
+            f"🔍 搜索结果：关于「{query}」",
+            f"  1. {query} - 百科介绍：这是一个热门话题...",
+            f"  2. {query} - 最新资讯：相关报道显示...",
+            f"  3. {query} - 用户评价：大多数人给出了正面反馈...",
+        ]
+    }
+    for key, values in results.items():
+        if key in query.lower():
+            return "\n".join(values)
+    return "\n".join(results["default"])
+
+
+# ─────────────────────────── 餐厅推荐工具 ───────────────────────────
 
 @tool
 def search_restaurant(location: str, cuisine: str = "") -> str:
@@ -61,6 +310,8 @@ def search_restaurant(location: str, cuisine: str = "") -> str:
     return f"📍 {location}附近推荐：巷子里的私房菜（人均 80 元，口碑好）、老码头火锅（人均 100 元）。"
 
 
+# ─────────────────────────── 电影推荐工具 ───────────────────────────
+
 @tool
 def search_movie(genre: str = "") -> str:
     """搜索当前热映或推荐的电影。可选输入电影类型偏好。"""
@@ -79,6 +330,8 @@ def search_movie(genre: str = "") -> str:
     return "🎥 当前热映推荐：\n" + "\n".join(movies)
 
 
+# ─────────────────────────── 计算器工具 ───────────────────────────
+
 @tool
 def calculator(expression: str) -> str:
     """计算数学表达式。输入数学表达式字符串，返回计算结果。支持基本四则运算。"""
@@ -93,23 +346,7 @@ def calculator(expression: str) -> str:
         return f"❌ 计算错误：{str(e)}"
 
 
-@tool
-def web_search(query: str) -> str:
-    """模拟网络搜索。输入搜索关键词，返回相关搜索结果。"""
-    # 模拟搜索结果（可替换为真实搜索 API 如 SerpAPI、Tavily 等）
-    results = {
-        "default": [
-            f"🔍 搜索结果：关于「{query}」",
-            f"  1. {query} - 百科介绍：这是一个热门话题...",
-            f"  2. {query} - 最新资讯：相关报道显示...",
-            f"  3. {query} - 用户评价：大多数人给出了正面反馈...",
-        ]
-    }
-    for key, values in results.items():
-        if key in query.lower():
-            return "\n".join(values)
-    return "\n".join(results["default"])
-
+# ─────────────────────────── 时间查询工具 ───────────────────────────
 
 @tool
 def get_current_time() -> str:
@@ -150,3 +387,23 @@ def execute_tool(name: str, **kwargs) -> str:
         return tool_fn.invoke(kwargs)
     except Exception as e:
         return f"❌ 工具执行错误：{str(e)}"
+
+
+def get_api_status() -> dict:
+    """
+    获取各 API 的配置状态（用于诊断）。
+
+    Returns:
+        包含各 API 状态信息的字典
+    """
+    return {
+        "search": {
+            "provider": SEARCH_API,
+            "tavily_configured": bool(TAVILY_API_KEY),
+            "serpapi_configured": bool(SERPAPI_API_KEY),
+        },
+        "weather": {
+            "provider": "openweathermap" if OPENWEATHERMAP_API_KEY else "mock",
+            "openweathermap_configured": bool(OPENWEATHERMAP_API_KEY),
+        },
+    }

@@ -5,10 +5,24 @@ langchain-openai>=0.1.0
 langchain-core>=0.2.0
 python-dotenv>=1.0.0
 
-# HTTP client (for future real API integration)
+# HTTP client (for real API integration)
 httpx>=0.27.0
+
+# LLM providers (optional, install as needed)
+langchain-anthropic>=0.1.0    # For Claude support
+langchain-community>=0.2.0    # For Ollama/local model support
+
+# Search API (optional, install as needed)
+tavily-python>=0.3.0          # For Tavily search
+# google-search-results>=2.0  # For SerpAPI search
+
+# Database persistence (optional)
+sqlalchemy>=2.0.0
 
 # Web API server (optional, for --serve mode)
 fastapi>=0.110.0
 uvicorn>=0.29.0
 pydantic>=2.0.0
+
+# Frontend UI (optional, for Streamlit)
+streamlit>=1.30.0

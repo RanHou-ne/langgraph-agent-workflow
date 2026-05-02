@@ -3,10 +3,11 @@
 实现 "用户输入 → 任务拆解 → Agent执行 → 结果评估 → 记忆更新" 闭环。
 """
 from langgraph.graph import MessagesState
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from typing import TypedDict
 import logging
+
+from llm_provider import get_llm
 
 from memory import (
     generate_summary,
@@ -41,7 +42,7 @@ def _parse_tool_call(step_text: str) -> tuple[str, dict]:
     从步骤描述中解析应该调用的工具和参数。
     使用 LLM 判断应该调用哪个工具。
     """
-    model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+    model = get_llm(temperature=0)
     
     tool_descriptions = "\n".join([
         f"- {t.name}: {t.description}" for t in ALL_TOOLS
@@ -112,7 +113,7 @@ def planner(state: AgentState, config) -> dict:
 搜索北京评分最高的中餐厅
 推荐最近上映的热门电影"""
 
-    model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+    model = get_llm(temperature=0)
     response = model.invoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=f"请为以下任务制定执行计划：\n{state['task']}")
@@ -154,7 +155,7 @@ def executor(state: AgentState, config) -> dict:
         logger.info(f"🔧 [Executor] 调用工具 {tool_name}，参数: {args}")
     else:
         # 如果没有匹配的工具，使用 LLM 直接回答
-        model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+        model = get_llm(temperature=0)
         response = model.invoke([
             SystemMessage(content="你是一个智能助手。请根据以下步骤描述，提供简洁有用的回答。"),
             HumanMessage(content=f"步骤：{step}")
@@ -192,7 +193,7 @@ def evaluator(state: AgentState, config) -> dict:
     # 所有步骤完成，生成最终回答
     logger.info("🔍 [Evaluator] 所有步骤完成，生成最终回答...")
     
-    model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+    model = get_llm(temperature=0)
     
     # 汇总所有步骤结果
     results_summary = "\n".join(state.get("step_results", []))

@@ -46,3 +46,9 @@ Thumbs.db
 
 # LangGraph
 .langgraph.db
+
+# Database
+data/
+*.db
+*.sqlite
+*.sqlite3
